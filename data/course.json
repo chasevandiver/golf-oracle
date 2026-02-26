@@ -1,0 +1,20 @@
+{
+  "name": "PGA National (Champion)",
+  "par": 70,
+  "yards": 7110,
+  "lat": 26.852,
+  "lon": -80.115,
+  "grassType": "Bermuda",
+  "weights": {
+    "sgOTT": 0.2,
+    "sgAPP": 0.34,
+    "sgATG": 0.24,
+    "sgPUTT": 0.22
+  },
+  "traits": [
+    "The Bear Trap 15-16-17",
+    "Accuracy critical",
+    "Bermuda putting",
+    "Wind off the water"
+  ]
+}

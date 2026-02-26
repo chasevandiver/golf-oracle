@@ -1,0 +1,34 @@
+{
+  "source": "openweathermap",
+  "avgWindMph": 7.3,
+  "days": [
+    {
+      "day": "R1",
+      "date": "2026-02-26",
+      "windMph": 7.3,
+      "tempF": 67.6,
+      "precipChance": 0
+    },
+    {
+      "day": "R2",
+      "date": "2026-02-27",
+      "windMph": 5.4,
+      "tempF": 73.9,
+      "precipChance": 20
+    },
+    {
+      "day": "R3",
+      "date": "2026-02-28",
+      "windMph": 7.2,
+      "tempF": 74.1,
+      "precipChance": 100
+    },
+    {
+      "day": "R4",
+      "date": "2026-03-01",
+      "windMph": 9.2,
+      "tempF": 74.2,
+      "precipChance": 100
+    }
+  ]
+}
