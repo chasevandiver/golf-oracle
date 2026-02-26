@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Golf Oracle</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#05080f;color:#e2e8f0;font-family:'DM Sans',sans-serif;min-height:100vh}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:#0a0f1c}::-webkit-scrollbar-thumb{background:#1e293b;border-radius:4px}
+@keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.fade-up{animation:fadeUp .4s ease forwards}
+button{cursor:pointer;font-family:inherit}
+select,input{font-family:inherit}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useCallback,useRef} = React;
+
+// ── SIMULATION ENGINE (client-side fallback) ──────────────────
+function lcg(seed){let s=(seed>>>0)||12345;return()=>{s=(Math.imul(1664525,s)+1013904223)>>>0;return s/0xffffffff}}
+function bm(rng){return Math.sqrt(-2*Math.log(Math.max(1e-10,rng())))*Math.cos(2*Math.PI*rng())}
+function americanOdds(d){return d>=2?`+${Math.round((d-1)*100)}`:`-${Math.round(100/(d-1))}`}
+function coursefit(p,course,wind=10){
+  const w=course.weights;
+  let v=p.sgOTT*w.sgOTT+p.sgAPP*w.sgAPP+p.sgATG*w.sgATG+p.sgPUTT*w.sgPUTT;
+  if(wind>14){const ws=Math.min(0.10,(wind-14)*0.007);v+=(p.sgOTT+p.sgAPP)*ws-p.sgPUTT*ws*0.6}
+  return v;
+}
+function genForm(sg){const b=sg*0.5;let prev=b;return Array.from({length:10},()=>{const v=0.6*b+0.2*prev+0.2*(Math.random()-0.5)*1.8;prev=v;return +v.toFixed(2)})}
+function formboost(form){if(!form?.length)return 0;const wts=[0.35,0.25,0.18,0.11,0.06,0.03,0.015,0.008,0.004,0.003];const w=wts.slice(0,form.length),tw=w.reduce((a,b)=>a+b,0);return(form.reduce((a,v,i)=>a+v*w[i],0)/tw-0.5)*0.24}
+function consistency(form){if(!form?.length)return 0.75;const m=form.reduce((a,b)=>a+b,0)/form.length;const std=Math.sqrt(form.reduce((a,b)=>a+(b-m)**2,0)/form.length);return Math.max(0.50,Math.min(0.95,1.0-std*0.28))}
+
+function simulate(players,course,nSims,wind=10){
+  const rng=lcg(Date.now()%99999+1),n=players.length;
+  const mus=players.map(p=>{const f=coursefit(p,course,wind);const fm=formboost(p.recentForm);return f+fm});
+  const sigmas=players.map(p=>Math.max(1.5,4.0-consistency(p.recentForm)*2.2));
+  const wins=new Int32Array(n),t5=new Int32Array(n),t10=new Int32Array(n),t20=new Int32Array(n),mc=new Int32Array(n);
+  const totpos=new Float64Array(n),scores=new Float64Array(n),final=new Float64Array(n),ranks=new Uint16Array(n);
+  const cutSize=Math.floor(n*0.65);
+  for(let s=0;s<nSims;s++){
+    const fn12=bm(rng)*0.5;
+    for(let i=0;i<n;i++)scores[i]=mus[i]+bm(rng)*sigmas[i]+mus[i]+bm(rng)*sigmas[i]+fn12;
+    const sorted=[...scores].sort((a,b)=>b-a);
+    const cutLine=sorted[cutSize]??-Infinity;
+    const fn34=bm(rng)*0.5;
+    for(let i=0;i<n;i++){if(scores[i]>=cutLine){mc[i]++;final[i]=scores[i]+mus[i]+bm(rng)*sigmas[i]+mus[i]+bm(rng)*sigmas[i]+fn34}else final[i]=-9999}
+    for(let i=0;i<n;i++)ranks[i]=i;
+    ranks.sort((a,b)=>final[b]-final[a]);
+    for(let pos=0;pos<n;pos++){const i=ranks[pos];totpos[i]+=pos;if(pos===0)wins[i]++;if(pos<5)t5[i]++;if(pos<10)t10[i]++;if(pos<20)t20[i]++}
+  }
+  return players.map((p,i)=>{
+    const wPct=wins[i]/nSims*100,dec=nSims/Math.max(1,wins[i]);
+    const fit=coursefit(p,course,wind),fm=formboost(p.recentForm),cons=consistency(p.recentForm);
+    return{...p,courseFit:+fit.toFixed(3),formBoost:+fm.toFixed(3),consistency:+cons.toFixed(3),
+      winPct:+wPct.toFixed(2),top5Pct:+(t5[i]/nSims*100).toFixed(2),top10Pct:+(t10[i]/nSims*100).toFixed(2),
+      top20Pct:+(t20[i]/nSims*100).toFixed(2),makeCutPct:+(mc[i]/nSims*100).toFixed(2),
+      avgFinish:+(totpos[i]/nSims+1).toFixed(1),impliedOdds:americanOdds(dec),decimalOdds:+dec.toFixed(1)}
+  }).sort((a,b)=>b.winPct-a.winPct);
+}
+
+// ── COURSES ───────────────────────────────────────────────────
+const COURSES={
+  "TPC Sawgrass":       {par:72,yards:7215,lat:30.197,lon:-81.396,grassType:"Bermuda",weights:{sgOTT:0.22,sgAPP:0.35,sgATG:0.24,sgPUTT:0.19},traits:["Accuracy over distance","Short game essential","Island green 17th","Atlantic wind"]},
+  "PGA National":       {par:70,yards:7110,lat:26.852,lon:-80.115,grassType:"Bermuda",weights:{sgOTT:0.20,sgAPP:0.34,sgATG:0.24,sgPUTT:0.22},traits:["The Bear Trap 15-16-17","Accuracy critical","Wind off the water","Short game premium"]},
+  "Augusta National":   {par:72,yards:7510,lat:33.503,lon:-82.023,grassType:"Bermuda",weights:{sgOTT:0.28,sgAPP:0.38,sgATG:0.16,sgPUTT:0.18},traits:["Long iron precision","Draw preferred","Par-5 reachability","Amen Corner wind"]},
+  "Pebble Beach":       {par:72,yards:7075,lat:36.568,lon:-121.951,grassType:"Poa Annua",weights:{sgOTT:0.20,sgAPP:0.32,sgATG:0.24,sgPUTT:0.24},traits:["Wind management critical","Coastal exposure","Poa Annua variability"]},
+  "Torrey Pines":       {par:72,yards:7765,lat:32.900,lon:-117.254,grassType:"Poa/Kikuyu",weights:{sgOTT:0.32,sgAPP:0.40,sgATG:0.13,sgPUTT:0.15},traits:["Ball-striking dominant","Long approaches","Distance advantage"]},
+  "Muirfield Village":  {par:72,yards:7392,lat:40.099,lon:-83.161,grassType:"Bentgrass",weights:{sgOTT:0.24,sgAPP:0.38,sgATG:0.18,sgPUTT:0.20},traits:["Precision driving","Mid-iron accuracy","Bentgrass putting"]},
+  "Riviera CC":         {par:71,yards:7322,lat:34.049,lon:-118.516,grassType:"Poa/Kikuyu",weights:{sgOTT:0.25,sgAPP:0.36,sgATG:0.20,sgPUTT:0.19},traits:["Kikuyu rough penalty","Creative shot-making","Low scoring typical"]},
+  "Bay Hill":           {par:72,yards:7466,lat:28.508,lon:-81.497,grassType:"Bermuda",weights:{sgOTT:0.27,sgAPP:0.37,sgATG:0.16,sgPUTT:0.20},traits:["Length advantage","Bermuda putting","Wind factor","Demanding closing stretch"]},
+  "Quail Hollow":       {par:71,yards:7521,lat:35.430,lon:-80.816,grassType:"Bermuda",weights:{sgOTT:0.30,sgAPP:0.36,sgATG:0.16,sgPUTT:0.18},traits:["Power golf rewarded","The Green Mile","Distance advantage"]},
+  "Harbour Town":       {par:71,yards:7099,lat:32.128,lon:-80.677,grassType:"Bermuda",weights:{sgOTT:0.16,sgAPP:0.34,sgATG:0.26,sgPUTT:0.24},traits:["Accuracy over length","Short game premium","Coastal wind"]},
+  "TPC Scottsdale":     {par:71,yards:7261,lat:33.660,lon:-111.890,grassType:"Bermuda",weights:{sgOTT:0.26,sgAPP:0.35,sgATG:0.20,sgPUTT:0.19},traits:["Desert surrounds punishing","Low scoring typical"]},
+  "Kapalua":            {par:73,yards:7596,lat:20.999,lon:-156.670,grassType:"Bermuda",weights:{sgOTT:0.34,sgAPP:0.35,sgATG:0.14,sgPUTT:0.17},traits:["Distance dominant","Strong trade winds","Very low scoring"]},
+  "East Lake":          {par:70,yards:7346,lat:33.726,lon:-84.328,grassType:"Bermuda",weights:{sgOTT:0.25,sgAPP:0.38,sgATG:0.17,sgPUTT:0.20},traits:["Elite-only field","Ball-striking premium"]},
+  "Colonial CC":        {par:70,yards:7209,lat:32.741,lon:-97.371,grassType:"Bermuda",weights:{sgOTT:0.20,sgAPP:0.36,sgATG:0.22,sgPUTT:0.22},traits:["Accuracy essential","Iron play critical","Wind from the south"]},
+  "Bethpage Black":     {par:71,yards:7459,lat:40.738,lon:-73.454,grassType:"Bentgrass",weights:{sgOTT:0.24,sgAPP:0.39,sgATG:0.19,sgPUTT:0.18},traits:["Notoriously difficult","Thick rough penalizes","Ball-striking paramount"]},
+};
+
+const SG_META=[
+  {key:"sgOTT",label:"Off the Tee",color:"#f59e0b"},
+  {key:"sgAPP",label:"Approach",color:"#10b981"},
+  {key:"sgATG",label:"Around Green",color:"#3b82f6"},
+  {key:"sgPUTT",label:"Putting",color:"#a78bfa"},
+];
+
+// ── COMPONENTS ────────────────────────────────────────────────
+function WinBar({pct}){
+  const n=parseFloat(pct);
+  const c=n>15?"#f59e0b":n>8?"#10b981":n>3?"#3b82f6":"#334155";
+  const w=Math.min(100,n*5);
+  return(
+    <div style={{display:"flex",alignItems:"center",gap:8}}>
+      <div style={{width:80,height:5,background:"#0f172a",borderRadius:3,overflow:"hidden"}}>
+        <div style={{width:`${w}%`,height:"100%",background:c,borderRadius:3}}/>
+      </div>
+      <span style={{fontSize:13,fontFamily:"'DM Mono',monospace",fontWeight:600,color:c,minWidth:40}}>{pct}%</span>
+    </div>
+  );
+}
+
+function SGBar({value,color}){
+  const pct=Math.max(0,Math.min(100,(value/2)*100));
+  return(
+    <div style={{display:"flex",alignItems:"center",gap:6}}>
+      <div style={{flex:1,height:4,background:"#0a0f1c",borderRadius:2}}>
+        <div style={{width:`${pct}%`,height:"100%",background:color,borderRadius:2}}/>
+      </div>
+      <span style={{fontSize:11,fontFamily:"'DM Mono',monospace",color:"#64748b",minWidth:36,textAlign:"right"}}>{value>0?"+":""}{value.toFixed(2)}</span>
+    </div>
+  );
+}
+
+function PlayerDrawer({player,rank,onClose}){
+  const wc=parseFloat(player.winPct)>15?"#f59e0b":parseFloat(player.winPct)>8?"#10b981":"#3b82f6";
+  return(
+    <div style={{position:"fixed",top:0,right:0,bottom:0,width:"min(480px,100vw)",background:"#070b14",borderLeft:"1px solid #1e293b",zIndex:300,overflowY:"auto",boxShadow:"-32px 0 80px rgba(0,0,0,0.9)"}}>
+      <div style={{animation:"fadeUp .2s ease"}}>
+        <div style={{padding:"20px 24px",borderBottom:"1px solid #0f172a",position:"sticky",top:0,background:"#070b14",zIndex:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div>
+              <div style={{fontSize:22,fontFamily:"'Bebas Neue',sans-serif",letterSpacing:2,color:"#f1f5f9"}}>{player.name}</div>
+              <div style={{fontSize:11,color:"#334155",marginTop:3}}>#{rank} predicted · {player.country||""} · {player.dataSource==="csv_2026"?"🟢 2026 live data":"📊 baseline"}</div>
+            </div>
+            <button onClick={onClose} style={{background:"#0f172a",border:"1px solid #1e293b",color:"#64748b",borderRadius:8,padding:"8px 12px",fontSize:14}}>✕</button>
+          </div>
+        </div>
+        <div style={{padding:22}}>
+          {/* Win probability hero */}
+          <div style={{background:`linear-gradient(135deg,${wc}12,#0f172a)`,border:`1px solid ${wc}30`,borderRadius:14,padding:18,marginBottom:16}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8,textAlign:"center"}}>
+              {[["WIN",player.winPct+"%",26,wc],["TOP 5",player.top5Pct+"%",18,"#94a3b8"],["TOP 10",player.top10Pct+"%",18,"#94a3b8"],["TOP 20",player.top20Pct+"%",18,"#94a3b8"],["CUT",player.makeCutPct+"%",16,"#64748b"]].map(([l,v,sz,c])=>(
+                <div key={l}><div style={{fontSize:sz,fontWeight:900,fontFamily:"'DM Mono',monospace",color:c}}>{v}</div><div style={{fontSize:9,color:"#334155",textTransform:"uppercase",letterSpacing:1,marginTop:2}}>{l}</div></div>
+              ))}
+            </div>
+          </div>
+          {/* Odds + fit */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:16}}>
+            {[["Model Odds",player.impliedOdds||player.odds,"#94a3b8"],["Course Fit",`${(player.courseFit||0)>0?"+":""}${(player.courseFit||0).toFixed(3)}`,(player.courseFit||0)>0.8?"#10b981":"#64748b"],["Form Boost",`${(player.formBoost||0)>0?"+":""}${(player.formBoost||0).toFixed(3)}`,(player.formBoost||0)>0?"#10b981":"#ef4444"]].map(([l,v,c])=>(
+              <div key={l} style={{padding:"12px",background:"#0f172a",border:"1px solid #1e293b",borderRadius:10,textAlign:"center"}}>
+                <div style={{fontSize:18,fontWeight:900,fontFamily:"'DM Mono',monospace",color:c}}>{v}</div>
+                <div style={{fontSize:9,color:"#334155",textTransform:"uppercase",letterSpacing:1,marginTop:3}}>{l}</div>
+              </div>
+            ))}
+          </div>
+          {/* SG breakdown */}
+          <div style={{marginBottom:16}}>
+            <div style={{fontSize:10,color:"#6366f1",fontWeight:700,textTransform:"uppercase",letterSpacing:1.5,marginBottom:10}}>Strokes Gained Profile</div>
+            {SG_META.map(({key,label,color})=>(
+              <div key={key} style={{marginBottom:10}}>
+                <div style={{fontSize:11,color:"#475569",marginBottom:4}}>{label}</div>
+                <SGBar value={player[key]||0} color={color}/>
+              </div>
+            ))}
+          </div>
+          {/* Avg finish */}
+          <div style={{padding:12,background:"#0a0f1c",border:"1px solid #0f172a",borderRadius:10,textAlign:"center"}}>
+            <div style={{fontSize:11,color:"#334155",marginBottom:4}}>PROJECTED AVG FINISH</div>
+            <div style={{fontSize:28,fontFamily:"'Bebas Neue',sans-serif",letterSpacing:2,color:"#64748b"}}>{player.avgFinish}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── MAIN APP ──────────────────────────────────────────────────
+function App(){
+  const [results,setResults]=useState([]);
+  const [meta,setMeta]=useState(null);
+  const [course,setCourse]=useState("TPC Sawgrass");
+  const [wind,setWind]=useState(10);
+  const [nSims,setNSims]=useState(25000);
+  const [tab,setTab]=useState("leaderboard");
+  const [search,setSearch]=useState("");
+  const [sortBy,setSortBy]=useState("winPct");
+  const [selected,setSelected]=useState(null);
+  const [running,setRunning]=useState(false);
+  const [progress,setProgress]=useState(0);
+  const [dataSource,setDataSource]=useState("builtin");
+  const [loadStatus,setLoadStatus]=useState("loading");
+  const progRef=useRef(null);
+
+  const courseObj=COURSES[course];
+
+  useEffect(()=>{
+    fetch("results.json")
+      .then(r=>r.ok?r.json():null)
+      .then(data=>{
+        if(data?.results?.length){
+          setResults(data.results);
+          setMeta(data.meta);
+          setDataSource("live");
+          setLoadStatus("live");
+          if(data.meta?.avgWindMph)setWind(data.meta.avgWindMph);
+          // match course
+          const cn=(data.meta?.courseName||"").toLowerCase();
+          const match=Object.keys(COURSES).find(k=>cn.includes(k.toLowerCase())||k.toLowerCase().includes(cn.split(" ")[0]));
+          if(match)setCourse(match);
+        } else setLoadStatus("builtin");
+      })
+      .catch(()=>setLoadStatus("builtin"));
+  },[]);
+
+  const runModel=useCallback(()=>{
+    setRunning(true);setProgress(0);setSelected(null);setDataSource("builtin");
+    progRef.current=setInterval(()=>setProgress(p=>Math.min(90,p+Math.random()*15)),100);
+    setTimeout(()=>{
+      const field=Object.entries({
+        "Scottie Scheffler":{sgOTT:0.85,sgAPP:1.24,sgATG:0.36,sgPUTT:0.20},
+        "Xander Schauffele":{sgOTT:0.72,sgAPP:1.01,sgATG:0.43,sgPUTT:0.44},
+        "Rory McIlroy":{sgOTT:1.08,sgAPP:0.89,sgATG:0.24,sgPUTT:0.33},
+        "Collin Morikawa":{sgOTT:0.43,sgAPP:1.21,sgATG:0.30,sgPUTT:0.20},
+        "Viktor Hovland":{sgOTT:0.80,sgAPP:0.93,sgATG:0.20,sgPUTT:0.37},
+        "Jon Rahm":{sgOTT:0.70,sgAPP:0.96,sgATG:0.41,sgPUTT:0.49},
+        "Patrick Cantlay":{sgOTT:0.53,sgAPP:0.90,sgATG:0.33,sgPUTT:0.60},
+        "Wyndham Clark":{sgOTT:0.86,sgAPP:0.76,sgATG:0.23,sgPUTT:0.46},
+        "Tommy Fleetwood":{sgOTT:0.46,sgAPP:0.95,sgATG:0.35,sgPUTT:0.29},
+        "Shane Lowry":{sgOTT:0.32,sgAPP:0.81,sgATG:0.46,sgPUTT:0.40},
+        "Tyrrell Hatton":{sgOTT:0.40,sgAPP:0.87,sgATG:0.44,sgPUTT:0.35},
+        "Tony Finau":{sgOTT:0.90,sgAPP:0.71,sgATG:0.30,sgPUTT:0.20},
+        "Hideki Matsuyama":{sgOTT:0.56,sgAPP:0.90,sgATG:0.21,sgPUTT:0.42},
+        "Matt Fitzpatrick":{sgOTT:0.37,sgAPP:0.93,sgATG:0.40,sgPUTT:0.24},
+        "Justin Thomas":{sgOTT:0.59,sgAPP:0.84,sgATG:0.30,sgPUTT:0.20},
+        "Jordan Spieth":{sgOTT:0.32,sgAPP:0.73,sgATG:0.53,sgPUTT:0.57},
+        "Sahith Theegala":{sgOTT:0.81,sgAPP:0.73,sgATG:0.37,sgPUTT:0.16},
+        "Cameron Young":{sgOTT:0.98,sgAPP:0.73,sgATG:0.24,sgPUTT:0.14},
+        "Will Zalatoris":{sgOTT:0.62,sgAPP:0.86,sgATG:0.22,sgPUTT:0.13},
+        "Akshay Bhatia":{sgOTT:0.74,sgAPP:0.64,sgATG:0.43,sgPUTT:0.21},
+      }).map(([name,sg])=>({name,...sg,recentForm:genForm(sg.sgOTT+sg.sgAPP+sg.sgATG+sg.sgPUTT),dataSource:"builtin"}));
+      const res=simulate(field,courseObj,nSims,wind);
+      clearInterval(progRef.current);setProgress(100);
+      setTimeout(()=>{setResults(res);setRunning(false);setProgress(0);},200);
+    },600);
+  },[course,nSims,wind,courseObj]);
+
+  const displayed=results
+    .filter(p=>p.name?.toLowerCase().includes(search.toLowerCase()))
+    .sort((a,b)=>sortBy==="avgFinish"?(a[sortBy]||0)-(b[sortBy]||0):(b[sortBy]||0)-(a[sortBy]||0));
+
+  const isLive=dataSource==="live";
+
+  return(
+    <div style={{minHeight:"100vh",background:"#05080f"}}>
+      {/* Overlay */}
+      {selected&&<>
+        <div onClick={()=>setSelected(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:299}}/>
+        <PlayerDrawer player={selected} rank={results.findIndex(r=>r.name===selected.name)+1} onClose={()=>setSelected(null)}/>
+      </>}
+
+      {/* Header */}
+      <header style={{background:"rgba(5,8,15,0.95)",borderBottom:"1px solid #0d1626",padding:"0 28px",height:60,display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:100,backdropFilter:"blur(20px)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:14}}>
+          <div style={{fontSize:28,fontFamily:"'Bebas Neue',sans-serif",letterSpacing:4,background:"linear-gradient(90deg,#f1f5f9,#64748b)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>GOLF ORACLE</div>
+          <div style={{width:1,height:24,background:"#1e293b"}}/>
+          <div style={{fontSize:11,color:"#334155",letterSpacing:2,textTransform:"uppercase"}}>Prediction Engine</div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          {isLive&&meta&&(
+            <div style={{fontSize:11,padding:"4px 12px",borderRadius:20,background:"rgba(16,185,129,0.1)",border:"1px solid #10b98133",color:"#10b981",fontWeight:600}}>
+              🟢 {meta.tournamentName} · {meta.fieldSize} players · {(meta.simulations||0).toLocaleString()} sims
+            </div>
+          )}
+          {running&&<div style={{fontSize:11,color:"#6366f1",display:"flex",alignItems:"center",gap:6}}><div style={{width:12,height:12,border:"2px solid #6366f133",borderTop:"2px solid #6366f1",borderRadius:"50%",animation:"spin .7s linear infinite"}}/> Simulating...</div>}
+        </div>
+      </header>
+
+      <div style={{maxWidth:1280,margin:"0 auto",padding:"24px 20px"}}>
+
+        {/* Config */}
+        <div style={{background:"#0a0f1c",border:"1px solid #0f172a",borderRadius:16,padding:20,marginBottom:20}}>
+          <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr auto",gap:12,alignItems:"end"}}>
+            <div>
+              <label style={{display:"block",fontSize:10,color:"#6366f1",fontWeight:700,marginBottom:6,textTransform:"uppercase",letterSpacing:1.5}}>Course</label>
+              <select value={course} onChange={e=>setCourse(e.target.value)} style={{width:"100%",background:"#0d1626",border:"1px solid #1e293b",borderRadius:8,color:"#f1f5f9",padding:"9px 12px",fontSize:13}}>
+                {Object.keys(COURSES).map(c=><option key={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{display:"block",fontSize:10,color:"#6366f1",fontWeight:700,marginBottom:6,textTransform:"uppercase",letterSpacing:1.5}}>Wind</label>
+              <select value={wind} onChange={e=>setWind(Number(e.target.value))} style={{width:"100%",background:"#0d1626",border:"1px solid #1e293b",borderRadius:8,color:"#f1f5f9",padding:"9px 12px",fontSize:13}}>
+                {[[5,"Calm"],[10,"Light"],[15,"Moderate"],[20,"Windy"],[25,"Very Windy"]].map(([v,l])=><option key={v} value={v}>{v}mph — {l}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{display:"block",fontSize:10,color:"#6366f1",fontWeight:700,marginBottom:6,textTransform:"uppercase",letterSpacing:1.5}}>Sims</label>
+              <select value={nSims} onChange={e=>setNSims(Number(e.target.value))} style={{width:"100%",background:"#0d1626",border:"1px solid #1e293b",borderRadius:8,color:"#f1f5f9",padding:"9px 12px",fontSize:13}}>
+                <option value={10000}>10k — Fast</option>
+                <option value={25000}>25k — Standard</option>
+                <option value={75000}>75k — Precise</option>
+              </select>
+            </div>
+            <div>
+              <label style={{display:"block",fontSize:10,color:"#6366f1",fontWeight:700,marginBottom:6,textTransform:"uppercase",letterSpacing:1.5}}>Sort</label>
+              <select value={sortBy} onChange={e=>setSortBy(e.target.value)} style={{width:"100%",background:"#0d1626",border:"1px solid #1e293b",borderRadius:8,color:"#f1f5f9",padding:"9px 12px",fontSize:13}}>
+                {[["winPct","Win%"],["top10Pct","Top 10%"],["top20Pct","Top 20%"],["makeCutPct","Cut%"],["courseFit","Course Fit"],["avgFinish","Avg Finish"]].map(([v,l])=><option key={v} value={v}>{l}</option>)}
+              </select>
+            </div>
+            <button onClick={runModel} disabled={running} style={{padding:"10px 22px",borderRadius:10,border:"none",background:running?"#0f172a":"linear-gradient(135deg,#6366f1,#8b5cf6)",color:"#fff",fontSize:14,fontWeight:700,boxShadow:running?"none":"0 4px 20px rgba(99,102,241,0.35)"}}>
+              {running?"...":"⚡ Run"}
+            </button>
+          </div>
+
+          {running&&<div style={{marginTop:12,height:2,background:"#0d1626",borderRadius:2}}><div style={{width:`${progress}%`,height:"100%",background:"linear-gradient(90deg,#6366f1,#a78bfa)",transition:"width .1s"}}/></div>}
+
+          {/* Course info */}
+          {courseObj&&<div style={{marginTop:16,paddingTop:14,borderTop:"1px solid #0a0f1c",display:"flex",gap:20,alignItems:"flex-start",flexWrap:"wrap"}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13,fontWeight:700,marginBottom:4}}>Par {courseObj.par} · {courseObj.yards.toLocaleString()} yds · {courseObj.grassType}</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                {courseObj.traits.map(t=><span key={t} style={{fontSize:10,padding:"2px 9px",background:"#0a0f1c",border:"1px solid #0f172a",borderRadius:20,color:"#475569"}}>{t}</span>)}
+              </div>
+            </div>
+            <div style={{display:"flex",gap:12}}>
+              {SG_META.map(({key,label,color})=>(
+                <div key={key} style={{textAlign:"center"}}>
+                  <div style={{fontSize:14,fontWeight:900,fontFamily:"'DM Mono',monospace",color}}>{(courseObj.weights[key]*100).toFixed(0)}%</div>
+                  <div style={{fontSize:9,color:"#334155",textTransform:"uppercase",letterSpacing:1}}>{label.split(" ")[0]}</div>
+                </div>
+              ))}
+            </div>
+          </div>}
+        </div>
+
+        {/* Tabs */}
+        {results.length>0&&(
+          <div style={{animation:"fadeUp .3s ease"}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:10}}>
+              <div style={{display:"flex",gap:2,background:"#0a0f1c",padding:4,borderRadius:10,border:"1px solid #0d1626"}}>
+                {[["leaderboard","📋 Leaderboard"],["podium","🏆 Podium"],["value","💰 Value"]].map(([id,label])=>(
+                  <button key={id} onClick={()=>setTab(id)} style={{padding:"7px 14px",background:tab===id?"#1e293b":"transparent",border:"none",borderRadius:7,color:tab===id?"#f1f5f9":"#334155",fontSize:12,fontWeight:600}}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search players..." style={{background:"#0a0f1c",border:"1px solid #1e293b",borderRadius:8,color:"#f1f5f9",padding:"8px 14px",fontSize:13,width:200}}/>
+            </div>
+
+            {/* LEADERBOARD */}
+            {tab==="leaderboard"&&(
+              <div>
+                <div style={{display:"grid",gridTemplateColumns:"36px 1fr 120px 80px 80px 80px 70px",gap:6,padding:"4px 14px",marginBottom:4}}>
+                  {["#","Player","Win %","T5%","T10%","T20%","Odds"].map(h=>(
+                    <div key={h} style={{fontSize:9,color:"#1e293b",fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>{h}</div>
+                  ))}
+                </div>
+                {displayed.map((p,i)=>{
+                  const orig=results.findIndex(r=>r.name===p.name)+1;
+                  return(
+                    <div key={p.name} onClick={()=>setSelected(p)}
+                      style={{display:"grid",gridTemplateColumns:"36px 1fr 120px 80px 80px 80px 70px",gap:6,padding:"11px 14px",marginBottom:2,borderRadius:9,border:"1px solid transparent",cursor:"pointer",transition:"all .15s"}}
+                      onMouseEnter={e=>{e.currentTarget.style.background="rgba(99,102,241,0.05)";e.currentTarget.style.borderColor="#1e293b"}}
+                      onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.borderColor="transparent"}}>
+                      <div style={{fontSize:13,fontWeight:900,fontFamily:"'DM Mono',monospace",color:orig===1?"#f59e0b":orig===2?"#94a3b8":orig===3?"#cd7f32":"#1e293b",alignSelf:"center"}}>{orig}</div>
+                      <div style={{alignSelf:"center"}}>
+                        <div style={{fontSize:13,fontWeight:700,color:"#f1f5f9",display:"flex",alignItems:"center",gap:6}}>
+                          {p.name}
+                          {p.dataSource==="csv_2026"&&<span style={{fontSize:9,padding:"1px 5px",borderRadius:4,background:"rgba(16,185,129,0.1)",color:"#10b981",border:"1px solid #10b98122"}}>2026</span>}
+                        </div>
+                        <div style={{fontSize:10,color:"#1e293b",marginTop:1}}>
+                          Fit: <span style={{color:(p.courseFit||0)>0.8?"#10b981":"#334155"}}>{(p.courseFit||0)>0?"+":""}{(p.courseFit||0).toFixed(2)}</span>
+                        </div>
+                      </div>
+                      <div style={{alignSelf:"center"}}><WinBar pct={p.winPct}/></div>
+                      {[p.top5Pct,p.top10Pct,p.top20Pct].map((v,j)=>(
+                        <div key={j} style={{fontSize:12,color:"#475569",fontFamily:"'DM Mono',monospace",alignSelf:"center"}}>{v}%</div>
+                      ))}
+                      <div style={{fontSize:12,fontFamily:"'DM Mono',monospace",fontWeight:700,color:"#334155",alignSelf:"center"}}>{p.impliedOdds||p.odds}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* PODIUM */}
+            {tab==="podium"&&(
+              <div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:14,marginBottom:14}}>
+                  {results.slice(0,3).map((p,i)=>{
+                    const medals=["🥇","🥈","🥉"],cols=["#f59e0b","#94a3b8","#cd7f32"];
+                    return(
+                      <div key={p.name} onClick={()=>setSelected(p)} style={{background:"#0a0f1c",border:`1px solid ${cols[i]}30`,borderRadius:14,padding:22,textAlign:"center",cursor:"pointer",boxShadow:i===0?`0 0 40px ${cols[i]}12`:undefined}}>
+                        <div style={{fontSize:40,marginBottom:8}}>{medals[i]}</div>
+                        <div style={{fontSize:17,fontFamily:"'Bebas Neue',sans-serif",letterSpacing:2,marginBottom:12}}>{p.name}</div>
+                        <div style={{fontSize:36,fontWeight:900,color:cols[i],fontFamily:"'DM Mono',monospace",marginBottom:4}}>{p.winPct}%</div>
+                        <div style={{fontSize:11,color:"#334155",marginBottom:12}}>Win Probability</div>
+                        <div style={{fontSize:20,fontFamily:"'DM Mono',monospace",fontWeight:700,color:"#475569",marginBottom:14}}>{p.impliedOdds||p.odds}</div>
+                        {[["Top 10",p.top10Pct],["Make Cut",p.makeCutPct]].map(([l,v])=>(
+                          <div key={l} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"0 4px",marginBottom:4}}>
+                            <span style={{color:"#475569"}}>{l}</span>
+                            <span style={{fontFamily:"'DM Mono',monospace",color:"#64748b"}}>{v}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                  {results.slice(3,9).map((p,i)=>(
+                    <div key={p.name} onClick={()=>setSelected(p)} style={{display:"flex",gap:12,alignItems:"center",padding:"12px 16px",background:"#0a0f1c",border:"1px solid #0f172a",borderRadius:10,cursor:"pointer"}}>
+                      <div style={{fontSize:16,fontFamily:"'DM Mono',monospace",fontWeight:900,color:"#1e293b",minWidth:28}}>#{i+4}</div>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:13,fontWeight:700}}>{p.name}</div>
+                        <div style={{fontSize:10,color:"#334155",marginTop:1}}>Fit: {(p.courseFit||0).toFixed(2)}</div>
+                      </div>
+                      <div style={{textAlign:"right"}}>
+                        <div style={{fontSize:15,fontFamily:"'DM Mono',monospace",fontWeight:800,color:parseFloat(p.winPct)>10?"#10b981":"#64748b"}}>{p.winPct}%</div>
+                        <div style={{fontSize:11,fontFamily:"'DM Mono',monospace",color:"#334155"}}>{p.impliedOdds||p.odds}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* VALUE */}
+            {tab==="value"&&(
+              <div>
+                <div style={{padding:"12px 16px",background:"rgba(99,102,241,0.05)",border:"1px solid #6366f118",borderRadius:12,marginBottom:14,fontSize:12,color:"#64748b",lineHeight:1.7}}>
+                  <span style={{color:"#6366f1",fontWeight:700}}>💰 Value finder:</span> Players where model probability exceeds what their ranking/odds suggest. Best edge in Top 10 and Top 20 markets — outright winner markets are the sharpest.
+                </div>
+                {results.slice(0,Math.min(30,results.length)).map((p,i)=>{
+                  const highFit=(p.courseFit||0)>0.75,hotForm=(p.formBoost||0)>0.08;
+                  const reasons=[];
+                  if(highFit)reasons.push("🎯 Strong course fit");
+                  if(hotForm)reasons.push("🔥 Good form");
+                  if(reasons.length===0&&i>8)return null;
+                  const isStrong=reasons.length>=2;
+                  return(
+                    <div key={p.name} onClick={()=>setSelected(p)} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",marginBottom:7,background:isStrong?"rgba(16,185,129,0.04)":"rgba(10,15,28,0.5)",border:`1px solid ${isStrong?"#10b98118":"#0f172a"}`,borderRadius:10,cursor:"pointer"}}>
+                      <div style={{fontSize:12,fontFamily:"'DM Mono',monospace",fontWeight:900,color:"#1e293b",minWidth:28}}>#{i+1}</div>
+                      <div style={{flex:1}}>
+                        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3,flexWrap:"wrap"}}>
+                          <span style={{fontSize:14,fontWeight:700}}>{p.name}</span>
+                          {isStrong&&<span style={{fontSize:10,padding:"1px 7px",borderRadius:4,background:"rgba(16,185,129,0.12)",color:"#10b981",border:"1px solid #10b98122",fontWeight:700}}>VALUE</span>}
+                        </div>
+                        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                          {reasons.map(r=><span key={r} style={{fontSize:11,color:"#475569"}}>{r}</span>)}
+                        </div>
+                      </div>
+                      <div style={{display:"flex",gap:14,textAlign:"center"}}>
+                        {[["Win",p.winPct+"%",parseFloat(p.winPct)>12?"#f59e0b":parseFloat(p.winPct)>6?"#10b981":"#64748b"],["T10",p.top10Pct+"%","#3b82f6"],["Odds",p.impliedOdds||p.odds,"#475569"]].map(([l,v,c])=>(
+                          <div key={l}>
+                            <div style={{fontSize:9,color:"#1e293b",textTransform:"uppercase",letterSpacing:1,marginBottom:2}}>{l}</div>
+                            <div style={{fontSize:14,fontFamily:"'DM Mono',monospace",fontWeight:800,color:c}}>{v}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Empty state */}
+        {results.length===0&&loadStatus!=="loading"&&(
+          <div style={{textAlign:"center",padding:"80px 20px"}}>
+            <div style={{fontSize:64,marginBottom:20}}>⛳</div>
+            <div style={{fontSize:32,fontFamily:"'Bebas Neue',sans-serif",letterSpacing:3,color:"#1e293b",marginBottom:10}}>SELECT A COURSE AND RUN</div>
+            <div style={{fontSize:13,color:"#0f172a",maxWidth:400,margin:"0 auto 28px",lineHeight:1.7}}>Monte Carlo simulation engine · Course-weighted SG model · Wind calibration · Form weighting</div>
+            <button onClick={runModel} style={{padding:"14px 40px",background:"linear-gradient(135deg,#6366f1,#8b5cf6)",border:"none",borderRadius:12,color:"#fff",fontSize:15,fontWeight:700,boxShadow:"0 8px 32px rgba(99,102,241,0.35)"}}>
+              ⚡ Run Simulation
+            </button>
+          </div>
+        )}
+
+        <footer style={{marginTop:32,paddingTop:16,borderTop:"1px solid #0a0f1c",fontSize:11,color:"#0d1626",textAlign:"center"}}>
+          Golf Oracle · Monte Carlo Simulation Engine · For informational purposes only
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
